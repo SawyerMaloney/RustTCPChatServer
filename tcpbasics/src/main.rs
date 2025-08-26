@@ -7,31 +7,43 @@ use std::io::{stdin,stdout,Write};
 
 fn setup_listener() -> std::io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:8000")?;
+    listener.set_nonblocking(true).expect("Failed to put TcpListener into non-blocking mode.");
     println!("binded to port");
+    let mut streams: Vec<TcpStream> = Vec::new();
 
-    // accept connections and process them serially
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                handle_connection(stream);
+    loop {
+        match listener.accept() {
+            Ok((socket, addr)) => {
+                println!("Encountered new TCP connection on {}", addr);
+                handle_connection(socket, &mut streams);
             },
-            Err(_) => (),
+            Err(e) => eprintln!("Error trying to accept TCP connection: {}", e),
+        };
+
+        println!("entering stream loop");
+
+        for mut stream in &streams {
+            let mut buffer = [0; 1024];
+            match stream.read(&mut buffer) {
+                Ok(size) => {
+                    let message = String::from_utf8_lossy(&buffer[..size]);
+                    if message == "quit" {
+                        println!("received quit from client.");
+                        break
+                    }
+                    println!("received: {}", String::from_utf8_lossy(&buffer[..size]));
+                    buffer.fill(0);
+                },
+                Err(e) => eprintln!("Failed to read from stream: {}", e),
+            }
         }
     }
-
-    println!("Finished in listener");
-
-    Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let mut buffer = [0; 1024];
-    match stream.read(&mut buffer) {
-        Ok(size) => {
-            println!("received: {}", String::from_utf8_lossy(&buffer[..size]));
-        },
-        Err(e) => eprintln!("Failed to read from stream: {}", e),
-    }
+fn handle_connection(stream: TcpStream, streams: &mut Vec<TcpStream>) {
+    stream.set_nonblocking(true).expect("set_nonblocking call failed");
+    streams.push(stream);
+    println!("Exiting handle_connection");
 }
 
 fn setup_client() -> std::io::Result<()> {
@@ -40,12 +52,18 @@ fn setup_client() -> std::io::Result<()> {
     println!("connected to stream");
 
     let mut message = String::new();
-    print!("Enter your message: ");
-    let _ = stdout().flush();
-    stdin().read_line(&mut message).expect("Did not enter valid string");
-    let bytes_written = stream.write(message.as_bytes())?;
+    while message != "quit\n" {
+        message.clear();
+        print!("Enter your message, or 'quit': ");
+        match stdout().flush() {
+            Ok(()) => (),
+            Err(e) => eprintln!("Could not flush stdout. Panic'd with error {e}"),
+        };
+        stdin().read_line(&mut message).expect("Did not enter valid string");
+        let bytes_written = stream.write(message.trim().as_bytes())?;
 
-    println!("Bytes written: {}", bytes_written);
+        println!("Bytes written: {}", bytes_written);
+    }
     println!("Finished in client.");
     Ok(())
 }
