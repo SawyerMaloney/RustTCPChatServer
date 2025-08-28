@@ -52,22 +52,28 @@ async fn setup_listener() -> std::io::Result<()> {
 }
 
 async fn process(mut stream: TcpStream, tx: mpsc::Sender<Message>) {
-    let mut buf: [u8; 1024] = [0; 1024];
-    println!("blocking on stream until readable");
-    let size = stream.read(&mut buf).await.unwrap();
-    println!("received information and unblocking");
-    let msg = Message {
-        buf: buf,
-        size: size
-    };
-    tx.send(msg).await.unwrap();
+    loop {
+        let mut buf: [u8; 1024] = [0; 1024];
+        println!("blocking on stream until readable");
+        let size = stream.read(&mut buf).await.unwrap();
+        println!("received information and unblocking");
+        let msg = Message {
+            buf: buf,
+            size: size
+        };
+        let msg_string = msg.to_string() == "quit";
+        tx.send(msg).await.unwrap();
+        if msg_string {
+            break;
+        }
+    }
 }
 
 async fn manager(mut rx: mpsc::Receiver<Message>) {
-    let res = rx.recv().await.unwrap();
-    println!("First message, GOT = {:?}", res.to_string());
-    let res = rx.recv().await.unwrap();
-    println!("Second message, GOT = {:?}", res.to_string());
+    while let Some(res) = rx.recv().await {
+        println!("received message, {}", res.to_string());
+    }
+    println!("broken from loop");
 }
 
 async fn setup_client() -> std::io::Result<()> {
