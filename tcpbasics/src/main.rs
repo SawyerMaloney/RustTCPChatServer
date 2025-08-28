@@ -2,18 +2,28 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::io::{stdin,stdout,Write};
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
+
 
 
 #[derive(Debug)]
+#[derive(Clone)]
 struct Message {
     buf: [u8; 1024],
-    size: usize
+    size: usize,
+    sender: i32
 }
 
 impl ToString for Message {
     fn to_string(&self) -> String {
         String::from_utf8_lossy(&self.buf[..self.size]).into_owned()
+    }
+}
+
+impl Message {
+    fn get_sender(&self) -> String {
+        self.sender.to_string()
     }
 }
 
@@ -36,13 +46,18 @@ async fn setup_listener() -> std::io::Result<()> {
 
     println!("Both users connected. Going to stream listening loop...");
 
-    // mpsc channel to communicate messages
-    let (tx, rx) = mpsc::channel::<Message>(128);
-    let tx2 = tx.clone();
+    // broadcast channel to communicate messages in both directions
+    let (tx1, rx1) = broadcast::channel::<Message>(128);
+    // set up clones of handles
+    let tx2 = tx1.clone();
+    let tx_man = tx1.clone();
 
-    let man = tokio::spawn(manager(rx));
-    let t1 = tokio::spawn(process(stream1, tx));
-    let t2 = tokio::spawn(process(stream2, tx2));
+    let rx2 = tx1.subscribe();
+    let rx_man = tx1.subscribe();
+
+    let man = tokio::spawn(manager(tx_man, rx_man));
+    let t1 = tokio::spawn(process(stream1, tx1, rx1, 0));
+    let t2 = tokio::spawn(process(stream2, tx2, rx2, 1));
 
     t1.await.unwrap();
     t2.await.unwrap();
@@ -51,7 +66,7 @@ async fn setup_listener() -> std::io::Result<()> {
     Ok(())
 }
 
-async fn process(mut stream: TcpStream, tx: mpsc::Sender<Message>) {
+async fn process(mut stream: TcpStream, tx: broadcast::Sender<Message>, rx: broadcast::Receiver<Message>, sender: i32) {
     loop {
         let mut buf: [u8; 1024] = [0; 1024];
         println!("blocking on stream until readable");
@@ -59,19 +74,33 @@ async fn process(mut stream: TcpStream, tx: mpsc::Sender<Message>) {
         println!("received information and unblocking");
         let msg = Message {
             buf: buf,
-            size: size
+            size: size,
+            sender: sender
         };
         let msg_string = msg.to_string() == "quit";
-        tx.send(msg).await.unwrap();
+        tx.send(msg).unwrap();
         if msg_string {
             break;
         }
     }
 }
 
-async fn manager(mut rx: mpsc::Receiver<Message>) {
-    while let Some(res) = rx.recv().await {
-        println!("received message, {}", res.to_string());
+async fn manager(tx: broadcast::Sender<Message>, mut rx: broadcast::Receiver<Message>) {
+    loop {
+        let _ = match rx.recv().await {
+            Ok(msg) => {
+                println!("received message, {}, from sender {}", msg.to_string(), msg.get_sender());
+                msg
+            },
+            Err(RecvError::Closed) => {
+                println!("All sender halves have dropped");
+                break
+            },
+            Err(_) => {
+                println!("unimplemented");
+                break;
+            },
+        };
     }
     println!("broken from loop");
 }
