@@ -1,54 +1,55 @@
-use std::net::{TcpListener, TcpStream};
-// use std::thread;
-use std::io::prelude::*;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::io::{stdin,stdout,Write};
+use std::sync::{Arc, Mutex};
 
 
-fn setup_listener() -> std::io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:8000")?;
-    listener.set_nonblocking(true).expect("Failed to put TcpListener into non-blocking mode.");
+type Db = Arc<Mutex<Vec<[i32; 1024]>>>;
+
+
+async fn setup_listener() -> std::io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:8000").await.unwrap();
     println!("binded to port");
-    let mut streams: Vec<TcpStream> = Vec::new();
+    let mut streams: Vec<TcpStream> = Vec::new(); // tracking our two users
 
-    loop {
-        match listener.accept() {
-            Ok((socket, addr)) => {
-                println!("Encountered new TCP connection on {}", addr);
-                handle_connection(socket, &mut streams);
+    // wait for our two connections
+    while streams.len() < 2 {
+        let (socket, _) = listener.accept().await.unwrap();
+        handle_connection(socket, &mut streams);
+    }
+
+    println!("entering stream loop");
+
+    let db: Db = Arc::new(Mutex::new(Vec::new()));
+
+    for stream in &mut streams {
+        let mut buffer = [0; 1024];
+        match stream.read(&mut buffer).await {
+            Ok(size) => {
+                let message = String::from_utf8_lossy(&buffer[..size]);
+                if message == "quit" {
+                    println!("received quit from client.");
+                    break
+                }
+                println!("received: {}", String::from_utf8_lossy(&buffer[..size]));
+                buffer.fill(0);
             },
-            Err(e) => eprintln!("Error trying to accept TCP connection: {}", e),
-        };
-
-        println!("entering stream loop");
-
-        for mut stream in &streams {
-            let mut buffer = [0; 1024];
-            match stream.read(&mut buffer) {
-                Ok(size) => {
-                    let message = String::from_utf8_lossy(&buffer[..size]);
-                    if message == "quit" {
-                        println!("received quit from client.");
-                        break
-                    }
-                    println!("received: {}", String::from_utf8_lossy(&buffer[..size]));
-                    buffer.fill(0);
-                },
-                Err(e) => eprintln!("Failed to read from stream: {}", e),
-            }
+            Err(e) => eprintln!("Failed to read from stream: {}", e),
         }
     }
+
+    Ok(())
 }
 
 fn handle_connection(stream: TcpStream, streams: &mut Vec<TcpStream>) {
-    stream.set_nonblocking(true).expect("set_nonblocking call failed");
     streams.push(stream);
     println!("Exiting handle_connection");
 }
 
-fn setup_client() -> std::io::Result<()> {
+async fn setup_client() -> std::io::Result<()> {
     let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8000);
-    let mut stream = TcpStream::connect(&socket)?;
+    let mut stream = TcpStream::connect(&socket).await.unwrap();
     println!("connected to stream");
 
     let mut message = String::new();
@@ -60,7 +61,7 @@ fn setup_client() -> std::io::Result<()> {
             Err(e) => eprintln!("Could not flush stdout. Panic'd with error {e}"),
         };
         stdin().read_line(&mut message).expect("Did not enter valid string");
-        let bytes_written = stream.write(message.trim().as_bytes())?;
+        let bytes_written = stream.write(message.trim().as_bytes()).await?;
 
         println!("Bytes written: {}", bytes_written);
     }
@@ -68,27 +69,8 @@ fn setup_client() -> std::io::Result<()> {
     Ok(())
 }
 
-fn main() -> std::io::Result<()> {
-    // println!("Spawning listener handle");
-    // let listener_handle = thread::spawn(|| -> std::io::Result<()> {
-    //     setup_listener()
-    // });
-
-    // println!("Spawning client handle");
-    // let client_handle = thread::spawn(|| -> std::io::Result<()> {
-    //     setup_client()
-    // });
-
-    // println!("Joining on listener handle");
-    // match listener_handle.join() {
-    //     Ok(_) => (),
-    //     Err(_) => println!("Problem in listener handle"),
-    // };
-    // println!("Joining on client handle");
-    // match client_handle.join() {
-    //     Ok(_) => (),
-    //     Err(_) => println!("Problem in client handle"),
-    // };
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
 
     let mut choice = String::new();
     print!("Would you like to be (c)lient or (s)erver: ");
@@ -97,11 +79,11 @@ fn main() -> std::io::Result<()> {
     
     if choice.trim() == "c" {
         println!("Starting client.");
-        let _ = setup_client();
+        let _ = setup_client().await;
     }
     else if choice.trim() == "s" {
         println!("Starting server.");
-        let _ = setup_listener();
+        let _ = setup_listener().await;
     }
     else {
         println!("Please enter 'c' or 's'.");
