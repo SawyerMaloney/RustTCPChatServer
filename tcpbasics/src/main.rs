@@ -2,49 +2,72 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::io::{stdin,stdout,Write};
-use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 
 
-type Db = Arc<Mutex<Vec<[i32; 1024]>>>;
+#[derive(Debug)]
+struct Message {
+    buf: [u8; 1024],
+    size: usize
+}
+
+impl ToString for Message {
+    fn to_string(&self) -> String {
+        String::from_utf8_lossy(&self.buf[..self.size]).into_owned()
+    }
+}
 
 
 async fn setup_listener() -> std::io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:8000").await.unwrap();
     println!("binded to port");
-    let mut streams: Vec<TcpStream> = Vec::new(); // tracking our two users
+    let stream1: TcpStream;
+    let stream2: TcpStream;
 
-    // wait for our two connections
-    while streams.len() < 2 {
-        let (socket, _) = listener.accept().await.unwrap();
-        handle_connection(socket, &mut streams);
-    }
+    println!("Waiting for first connection...");
+    let (socket, _) = listener.accept().await.unwrap();
+    stream1 = socket;
 
-    println!("entering stream loop");
+    println!("Received first connection. Waiting for second connection...");
 
-    let db: Db = Arc::new(Mutex::new(Vec::new()));
+    let (socket, _) = listener.accept().await.unwrap();
+    stream2 = socket;
 
-    for stream in &mut streams {
-        let mut buffer = [0; 1024];
-        match stream.read(&mut buffer).await {
-            Ok(size) => {
-                let message = String::from_utf8_lossy(&buffer[..size]);
-                if message == "quit" {
-                    println!("received quit from client.");
-                    break
-                }
-                println!("received: {}", String::from_utf8_lossy(&buffer[..size]));
-                buffer.fill(0);
-            },
-            Err(e) => eprintln!("Failed to read from stream: {}", e),
-        }
-    }
+
+    println!("Both users connected. Going to stream listening loop...");
+
+    // mpsc channel to communicate messages
+    let (tx, rx) = mpsc::channel::<Message>(128);
+    let tx2 = tx.clone();
+
+    let man = tokio::spawn(manager(rx));
+    let t1 = tokio::spawn(process(stream1, tx));
+    let t2 = tokio::spawn(process(stream2, tx2));
+
+    t1.await.unwrap();
+    t2.await.unwrap();
+    man.await.unwrap();
 
     Ok(())
 }
 
-fn handle_connection(stream: TcpStream, streams: &mut Vec<TcpStream>) {
-    streams.push(stream);
-    println!("Exiting handle_connection");
+async fn process(mut stream: TcpStream, tx: mpsc::Sender<Message>) {
+    let mut buf: [u8; 1024] = [0; 1024];
+    println!("blocking on stream until readable");
+    let size = stream.read(&mut buf).await.unwrap();
+    println!("received information and unblocking");
+    let msg = Message {
+        buf: buf,
+        size: size
+    };
+    tx.send(msg).await.unwrap();
+}
+
+async fn manager(mut rx: mpsc::Receiver<Message>) {
+    let res = rx.recv().await.unwrap();
+    println!("First message, GOT = {:?}", res.to_string());
+    let res = rx.recv().await.unwrap();
+    println!("Second message, GOT = {:?}", res.to_string());
 }
 
 async fn setup_client() -> std::io::Result<()> {
