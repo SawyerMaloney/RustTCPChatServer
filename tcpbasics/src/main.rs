@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::io::{stdin,stdout,Write};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
-
+use std::mem::size_of;
 
 
 #[derive(Debug)]
@@ -24,6 +24,39 @@ impl ToString for Message {
 impl Message {
     fn get_sender(&self) -> String {
         self.sender.to_string()
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut v: Vec<u8> = Vec::new();
+        v.extend(&self.buf);
+        v.extend(self.size.to_be_bytes());
+        v.extend(self.sender.to_be_bytes());
+        v
+    }
+
+    fn from_bytes(v: Vec<u8>) -> Self {
+        const USIZE_SIZE: usize = size_of::<usize>();
+        const I32_SIZE: usize = size_of::<i32>();
+
+        let mut buf: [u8; 1024] = [0; 1024];
+        let mut size: [u8; USIZE_SIZE] = [0; USIZE_SIZE];
+        let mut sender: [u8; I32_SIZE] = [0; I32_SIZE];
+
+        for i in 0..buf.len() {
+            buf[i] = v[i];
+        }
+
+        size.copy_from_slice(&v[buf.len()..buf.len() + USIZE_SIZE]);
+        sender.copy_from_slice(&v[buf.len() + USIZE_SIZE..]);
+
+        let size: usize = usize::from_be_bytes(size);
+        let sender: i32 = i32::from_be_bytes(sender);
+
+        Self {
+            buf,
+            size,
+            sender
+        }
     }
 }
 
@@ -56,8 +89,8 @@ async fn setup_listener() -> std::io::Result<()> {
     let rx_man = tx1.subscribe();
 
     let man = tokio::spawn(manager(tx_man, rx_man));
-    let t1 = tokio::spawn(process(stream1, tx1, rx1, 0));
-    let t2 = tokio::spawn(process(stream2, tx2, rx2, 1));
+    let t1 = tokio::spawn(client_process(stream1, tx1, rx1, 0));
+    let t2 = tokio::spawn(client_process(stream2, tx2, rx2, 1));
 
     t1.await.unwrap();
     t2.await.unwrap();
@@ -66,22 +99,41 @@ async fn setup_listener() -> std::io::Result<()> {
     Ok(())
 }
 
-async fn process(mut stream: TcpStream, tx: broadcast::Sender<Message>, rx: broadcast::Receiver<Message>, sender: i32) {
+async fn client_process(mut stream: TcpStream, tx: broadcast::Sender<Message>, mut rx: broadcast::Receiver<Message>, sender: i32) {
     loop {
         let mut buf: [u8; 1024] = [0; 1024];
-        println!("blocking on stream until readable");
-        let size = stream.read(&mut buf).await.unwrap();
-        println!("received information and unblocking");
-        let msg = Message {
-            buf: buf,
-            size: size,
-            sender: sender
+        // try to read from TcpStream 
+        match stream.try_read(&mut buf) {
+            Ok(size) => {
+                // if message is received, parse and send
+                let msg = Message {
+                    buf: buf,
+                    size: size,
+                    sender: sender
+                };
+                let msg_string = msg.to_string() == "quit";
+                tx.send(msg).unwrap();
+                if msg_string {
+                    break;
+                }
+            },
+            Err(_) => {
+                // no tcp was found
+                ()
+            }
         };
-        let msg_string = msg.to_string() == "quit";
-        tx.send(msg).unwrap();
-        if msg_string {
-            break;
-        }
+
+        // try to read from broadcast
+        match rx.try_recv() {
+            Ok(msg) => {
+                // message received from broadcast
+                // Check if new message, propogate to TcpStream
+                if msg.sender != sender {
+                    stream.write(&msg.buf).await.unwrap();
+                }
+            },
+            Err(_) => (),
+        };
     }
 }
 
