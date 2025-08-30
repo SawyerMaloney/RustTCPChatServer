@@ -1,5 +1,5 @@
 use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use tokio::io::{AsyncWriteExt};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::io::{stdin,stdout,Write};
 use tokio::sync::broadcast;
@@ -83,12 +83,11 @@ async fn setup_listener() -> std::io::Result<()> {
     let (tx1, rx1) = broadcast::channel::<Message>(128);
     // set up clones of handles
     let tx2 = tx1.clone();
-    let tx_man = tx1.clone();
 
     let rx2 = tx1.subscribe();
     let rx_man = tx1.subscribe();
 
-    let man = tokio::spawn(manager(tx_man, rx_man));
+    let man = tokio::spawn(manager(rx_man));
     let t1 = tokio::spawn(client_process(stream1, tx1, rx1, 0));
     let t2 = tokio::spawn(client_process(stream2, tx2, rx2, 1));
 
@@ -105,6 +104,7 @@ async fn client_process(mut stream: TcpStream, tx: broadcast::Sender<Message>, m
         // try to read from TcpStream 
         match stream.try_read(&mut buf) {
             Ok(size) => {
+                println!("try_read succeeded on sender {}", sender);
                 // if message is received, parse and send
                 let msg = Message {
                     buf: buf,
@@ -112,7 +112,10 @@ async fn client_process(mut stream: TcpStream, tx: broadcast::Sender<Message>, m
                     sender: sender
                 };
                 let msg_string = msg.to_string() == "quit";
-                tx.send(msg).unwrap();
+                match tx.send(msg) {
+                    Ok(size) => println!("Broadcasted bytes: {}", size),
+                    Err(_) => println!("Error while broadcasting in client_process"),
+                };
                 if msg_string {
                     break;
                 }
@@ -129,7 +132,8 @@ async fn client_process(mut stream: TcpStream, tx: broadcast::Sender<Message>, m
                 // message received from broadcast
                 // Check if new message, propogate to TcpStream
                 if msg.sender != sender {
-                    stream.write(&msg.buf).await.unwrap();
+                    println!("client_process: received message on broadcast. Sending to TcpStream.");
+                    stream.write(&msg.to_bytes()).await.unwrap();
                 }
             },
             Err(_) => (),
@@ -137,7 +141,8 @@ async fn client_process(mut stream: TcpStream, tx: broadcast::Sender<Message>, m
     }
 }
 
-async fn manager(tx: broadcast::Sender<Message>, mut rx: broadcast::Receiver<Message>) {
+async fn manager(mut rx: broadcast::Receiver<Message>) {
+    println!("Started manager,");
     loop {
         let _ = match rx.recv().await {
             Ok(msg) => {
@@ -174,6 +179,18 @@ async fn setup_client() -> std::io::Result<()> {
         let bytes_written = stream.write(message.trim().as_bytes()).await?;
 
         println!("Bytes written: {}", bytes_written);
+
+        // DEBUG TODO remove, check TcpStream for incoming 
+        let mut buf: [u8; 2048] = [0; 2048];
+        match stream.try_read(&mut buf) {
+            Ok(_) => {
+                let mut v = Vec::new();
+                v.extend(buf);
+                let msg: Message = Message::from_bytes(v);
+                println!("Received message on TcpStream, {}, from sender {}", msg.to_string(), msg.sender);
+            },
+            Err(_) => (),
+        };
     }
     println!("Finished in client.");
     Ok(())
