@@ -47,7 +47,7 @@ impl Message {
         }
 
         size.copy_from_slice(&v[buf.len()..buf.len() + USIZE_SIZE]);
-        sender.copy_from_slice(&v[buf.len() + USIZE_SIZE..]);
+        sender.copy_from_slice(&v[buf.len() + USIZE_SIZE..buf.len() + USIZE_SIZE + I32_SIZE]);
 
         let size: usize = usize::from_be_bytes(size);
         let sender: i32 = i32::from_be_bytes(sender);
@@ -114,7 +114,9 @@ async fn client_process(mut stream: TcpStream, tx: broadcast::Sender<Message>, m
                 let msg_string = msg.to_string() == "quit";
                 match tx.send(msg) {
                     Ok(size) => println!("Broadcasted bytes: {}", size),
-                    Err(_) => println!("Error while broadcasting in client_process"),
+                    Err(_) => {
+                        println!("Error while broadcasting in client_process");
+                },
                 };
                 if msg_string {
                     break;
@@ -161,6 +163,7 @@ async fn manager(mut rx: broadcast::Receiver<Message>) {
     }
     println!("broken from loop");
 }
+
 
 async fn setup_client() -> std::io::Result<()> {
     let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8000);
