@@ -4,7 +4,6 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::io::{stdin,stdout,Write};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
-use std::mem::size_of;
 
 // axum framework
 use axum::{
@@ -17,7 +16,7 @@ use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Message {
-    buf: [u8; 1024],
+    buf: Vec<u8>,
     size: usize,
     sender: i32
 }
@@ -74,7 +73,7 @@ async fn setup_listener() -> std::io::Result<()> {
 
 async fn client_process(mut stream: TcpStream, tx: broadcast::Sender<Message>, mut rx: broadcast::Receiver<Message>, sender: i32) {
     loop {
-        let mut buf: [u8; 1024] = [0; 1024];
+        let mut buf: Vec<u8> = Vec::new();
         // try to read from TcpStream 
         match stream.try_read(&mut buf) {
             Ok(size) => {
@@ -163,7 +162,7 @@ async fn setup_client() -> std::io::Result<()> {
             Ok(_) => {
                 let mut v = Vec::new();
                 v.extend(buf);
-                let msg: Message = bincode::deserialize(v);
+                let msg: Message = bincode::deserialize(&v).unwrap();
                 println!("Received message on TcpStream, {}, from sender {}", msg.to_string(), msg.sender);
             },
             Err(_) => (),
