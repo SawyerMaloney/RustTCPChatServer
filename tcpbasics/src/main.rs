@@ -6,9 +6,16 @@ use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use std::mem::size_of;
 
+// axum framework
+use axum::{
+    routing::{get, post},
+    http::StatusCode,
+    Json, Router
+};
 
-#[derive(Debug)]
-#[derive(Clone)]
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Message {
     buf: [u8; 1024],
     size: usize,
@@ -24,39 +31,6 @@ impl ToString for Message {
 impl Message {
     fn get_sender(&self) -> String {
         self.sender.to_string()
-    }
-
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut v: Vec<u8> = Vec::new();
-        v.extend(&self.buf);
-        v.extend(self.size.to_be_bytes());
-        v.extend(self.sender.to_be_bytes());
-        v
-    }
-
-    fn from_bytes(v: Vec<u8>) -> Self {
-        const USIZE_SIZE: usize = size_of::<usize>();
-        const I32_SIZE: usize = size_of::<i32>();
-
-        let mut buf: [u8; 1024] = [0; 1024];
-        let mut size: [u8; USIZE_SIZE] = [0; USIZE_SIZE];
-        let mut sender: [u8; I32_SIZE] = [0; I32_SIZE];
-
-        for i in 0..buf.len() {
-            buf[i] = v[i];
-        }
-
-        size.copy_from_slice(&v[buf.len()..buf.len() + USIZE_SIZE]);
-        sender.copy_from_slice(&v[buf.len() + USIZE_SIZE..buf.len() + USIZE_SIZE + I32_SIZE]);
-
-        let size: usize = usize::from_be_bytes(size);
-        let sender: i32 = i32::from_be_bytes(sender);
-
-        Self {
-            buf,
-            size,
-            sender
-        }
     }
 }
 
@@ -116,7 +90,7 @@ async fn client_process(mut stream: TcpStream, tx: broadcast::Sender<Message>, m
                     Ok(size) => println!("Broadcasted bytes: {}", size),
                     Err(_) => {
                         println!("Error while broadcasting in client_process");
-                },
+                    },
                 };
                 if msg_string {
                     break;
@@ -135,7 +109,7 @@ async fn client_process(mut stream: TcpStream, tx: broadcast::Sender<Message>, m
                 // Check if new message, propogate to TcpStream
                 if msg.sender != sender {
                     println!("client_process: received message on broadcast. Sending to TcpStream.");
-                    stream.write(&msg.to_bytes()).await.unwrap();
+                    stream.write(&bincode::serialize(&msg).unwrap()).await.unwrap();
                 }
             },
             Err(_) => (),
@@ -189,7 +163,7 @@ async fn setup_client() -> std::io::Result<()> {
             Ok(_) => {
                 let mut v = Vec::new();
                 v.extend(buf);
-                let msg: Message = Message::from_bytes(v);
+                let msg: Message = bincode::deserialize(v);
                 println!("Received message on TcpStream, {}, from sender {}", msg.to_string(), msg.sender);
             },
             Err(_) => (),
