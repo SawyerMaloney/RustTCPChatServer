@@ -5,12 +5,6 @@ use std::io::{stdin,stdout,Write};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
-// axum framework
-use axum::{
-    routing::{get, post},
-    http::StatusCode,
-    Json, Router
-};
 
 use serde::{Serialize, Deserialize};
 
